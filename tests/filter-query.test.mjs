@@ -1,0 +1,16 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {cleanFilters,buildWhere,descendants,normalize} from '../lib/filter-query.mjs';
+const categories=[{id:'additives',parentId:null},{id:'color',parentId:'additives'},{id:'natural',parentId:'color'}];
+test('normalizes full width and case',()=>assert.equal(normalize(' ＳＯＹ '),'soy'));
+test('last polarity wins, no contradictory same-term state',()=>assert.deepEqual(cleanFilters([{type:'ingredient',id:'a',mode:'include'},{type:'ingredient',id:'a',mode:'exclude'}]).map(f=>f.mode),['exclude']));
+test('rejects injected identifiers and excessive conditions',()=>{assert.throws(()=>cleanFilters([{type:'ingredient',id:"' OR 1=1",mode:'include'}]));assert.throws(()=>cleanFilters(Array(41).fill({})));});
+test('category descendants include parent and nested children',()=>assert.deepEqual(descendants('additives',categories),['additives','color','natural']));
+test('multiple includes are AND, excludes are NOT EXISTS',()=>{let r=buildWhere({filters:[{type:'ingredient',id:'a',mode:'include'},{type:'ingredient',id:'b',mode:'include'},{type:'ingredient',id:'c',mode:'exclude'}]},categories);assert.equal((r.sql.match(/EXISTS/g)||[]).length,3);assert.ok(r.sql.includes(' AND NOT EXISTS'));assert.deepEqual(r.params,['a','b','c']);});
+test('exclusion always rejects missing or uncertain ingredients',()=>assert.ok(buildWhere({scope:'all',filters:[{type:'ingredient',id:'a',mode:'exclude'}]},categories).sql.includes("ingredient_status = 'parsed'")));
+test('category exclusions use current taxonomy without claiming unclassified means absent',()=>assert.ok(!buildWhere({filters:[{type:'category',id:'additives',mode:'exclude'}]},categories).sql.includes("cu.category_id='unclassified'")));
+test('positive filters do not count precaution alone',()=>{let r=buildWhere({filters:[{type:'ingredient',id:'a',mode:'include'}]},categories);assert.ok(!r.sql.includes("'precaution'"));});
+test('negative filters conservatively reject matching precaution',()=>{let r=buildWhere({filters:[{type:'ingredient',id:'a',mode:'exclude'}]},categories);assert.ok(r.sql.includes("'precaution'"));});
+test('search is bound and wildcard escaped',()=>{const r=buildWhere({q:"SOY%_'",scope:'all'},categories);assert.deepEqual(r.params,["%soy\\%\\_'%"]);assert.ok(!r.sql.includes('SOY'));});
+test('category evidence includes product-local explicit roles',()=>{const r=buildWhere({filters:[{type:'category',id:'additives',mode:'exclude'}]},categories);assert.ok(r.sql.includes('product_categories'));assert.ok(r.sql.includes('NOT (EXISTS'));assert.equal(r.params.length,2);});
+test('default scope is parsed records',()=>assert.ok(buildWhere({},categories).sql.includes("p.ingredient_status = 'parsed'")));
